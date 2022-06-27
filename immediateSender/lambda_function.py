@@ -181,12 +181,13 @@ def get_transcript(contactId,contactDate,contactChannel,instanceId):
     bucketPrefix = bucketConfig['BucketPrefix']+contactDate['year']+'/'+contactDate['month']+'/'+contactDate['day']+'/'+contactId
     numberObjects = sum(1 for _ in bucket.objects.filter(Prefix=bucketPrefix))
     
-    if(numberObjects >= 1):
-        print("Transcript already available")
-    else:
+    
+    while numberObjects < 1: 
         print("No transcript available, waiting 10")
         time.sleep(10)
-        print("Finished waiting")
+        numberObjects = sum(1 for _ in bucket.objects.filter(Prefix=bucketPrefix))
+    else:
+        print("Transcript found")
     
     transcript= ''
     for s3object in bucket.objects.filter(Prefix=bucketConfig['BucketPrefix']+contactDate['year']+'/'+contactDate['month']+'/'+contactDate['day']+'/'+contactId):
