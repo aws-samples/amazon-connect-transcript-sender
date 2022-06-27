@@ -1,0 +1,178 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: Amazon Connect conversation transcript sender.
+
+Globals:
+  Function:
+    Timeout: 60
+    MemorySize: 256
+    Runtime: python3.8
+
+Resources:
+  LastContact:
+    Type: AWS::DynamoDB::Table
+    Properties: 
+      AttributeDefinitions: 
+        - 
+          AttributeName: "phone"
+          AttributeType: "S"
+
+      KeySchema: 
+        - 
+          AttributeName: "phone"
+          KeyType: "HASH"
+
+      BillingMode: "PAY_PER_REQUEST"
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: True
+      SSESpecification:
+        SSEEnabled: True
+  
+  SenderLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          -
+            Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns: 
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaKinesisExecutionRole
+      Policies:
+        -
+          PolicyName: BucketAccess
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              -
+                Effect: Allow
+                Action:
+                  - 's3:GetObject'
+                  - 's3:ListBucket'
+                Resource:
+                  - '*'
+
+        -
+          PolicyName: LastContactTableAccess
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              -
+                Effect: Allow
+                Action:
+                  - 'dynamodb:PutItem'
+                  - 'dynamodb:DeleteItem'
+                  - 'dynamodb:GetItem'
+                  - 'dynamodb:Query'
+                  - 'dynamodb:UpdateItem'
+                Resource:
+                  - !GetAtt LastContact.Arn
+
+        -
+          PolicyName: ConnectAccess
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              -
+                Effect: Allow
+                Action:
+                  - 'connect:GetContactAttributes' 
+                  - 'connect:DescribeContact'
+                  - 'connect:ListInstanceStorageConfigs'
+                Resource:
+                  - '*'
+        -
+          PolicyName: SESAccess
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              -
+                Effect: Allow
+                Action:
+                  - 'ses:SendEmail'
+                Resource:
+                  - '*'        
+        -
+          PolicyName: SendMessage
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              -
+                Effect: Allow
+                Action:
+                  - 'sms-voice:SendTextMessage'
+                Resource:
+                  - '*'
+
+  boto3latest:
+    Type: AWS::Serverless::LayerVersion
+    Properties:
+      ContentUri: boto3-latest/
+      CompatibleRuntimes:
+        - python3.7
+        - python3.8
+        - python3.9
+    Metadata:
+      BuildMethod: python3.8
+
+  immediateSender:
+    Type: AWS::Serverless::Function 
+    Properties:
+      Role: !GetAtt SenderLambdaRole.Arn
+      CodeUri: immediateSender/
+      Handler: lambda_function.lambda_handler
+      Layers:
+        - !Ref boto3latest
+      Environment: 
+        Variables:
+          LAST_CONTACT_TABLE: !Ref LastContact
+          MESSAGE_TEMPLATE: 'Te envio la transcripcion de tu sesion? Responde con tu correo al '
+          PINPOINT_NUMBER: ''
+          SOURCE_EMAIL: ''
+
+  messageTriggeredSender:
+    Type: AWS::Serverless::Function 
+    Properties:
+      Role: !GetAtt SenderLambdaRole.Arn
+      CodeUri: messageTriggeredSender/
+      Handler: lambda_function.lambda_handler
+      Layers:
+        - !Ref boto3latest
+      Environment: 
+        Variables:
+          LAST_CONTACT_TABLE: !Ref LastContact
+          DEFAULT_CONTACT_LENS_PREFIX: 'Analysis/Voice/'
+          SOURCE_EMAIL: ''
+  
+  contactLensRule:
+    Type: AWS::Events::Rule
+    Properties:
+      EventPattern: 
+        source: 
+          - "aws.connect"
+        detail-type: 
+          - "Contact Lens Post Call Rules Matched"
+      State: "ENABLED"
+      Targets: 
+        - 
+          Arn: 
+            Fn::GetAtt: 
+              - "immediateSender"
+              - "Arn"
+          Id: "TargetFunctionV1"
+
+  PermissionForEventsToInvokeLambda:
+    Type: AWS::Lambda::Permission
+    Properties: 
+      FunctionName: !Ref "immediateSender"
+      Action: "lambda:InvokeFunction"
+      Principal: "events.amazonaws.com"
+      SourceArn: 
+        Fn::GetAtt: 
+          - "contactLensRule"
+          - "Arn"
